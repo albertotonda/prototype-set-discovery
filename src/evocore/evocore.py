@@ -53,8 +53,8 @@ from .logging import initialize_logging, close_logging
 LOG_DIR = "../log"
 RESULTS_DIR = "../results"
 VERSION = (1, 1)
-DEBUG = True
-#DEBUG = False
+#DEBUG = True
+DEBUG = False
 
 
 class EvoCore(object):
@@ -64,7 +64,7 @@ class EvoCore(object):
 
     def __init__(self, data_ids=None,
                  datasets="iris",
-                 classifiers="RandomForestClassifier",
+                 models="RandomForestClassifier",
                  n_splits=10,
                  seed=42,
                  *args, **kwargs):
@@ -77,22 +77,29 @@ class EvoCore(object):
         self.seed = seed
         self.n_splits = n_splits
 
-#        if type(datasets) is str:
-#            self.data_ids = [data_ids]
-#            self.datasets = [datasets]
-#        elif type(datasets) == list:
-#            self.data_ids = data_ids
-#            self.datasets = datasets
-#        else:
-#            raise RuntimeError('Dataset type must be str or list')
-#            sys.exit(1)
-#
-#        if type(classifiers) is str:
-#            self.classifiers = [classifiers]
+        # check data type for datasets
+        if type(datasets) is str:
+            self.data_ids = [data_ids]
+            self.datasets = [datasets]
+        elif type(datasets) == list:
+            self.data_ids = data_ids
+            self.datasets = datasets
+        else:
+            raise TypeError('Dataset type must be str or list')
+            sys.exit(1)
 
-#        self.data_id = data_id
-#        self.dataset_name = dataset_name
-#        self.classifier_name = classifier_name
+        # check data type for classifiers
+        if type(models) is str:
+            self.models = [models]
+        elif type(models) == list:
+            self.models = models
+        else:
+            raise TypeError('Classifier type must be str or list')
+            sys.exit(1)
+
+        self.data_id = None
+        self.dataset_name = None
+        self.classifier_name = None
 
         if DEBUG:
             self.max_points_in_core_set = 5
@@ -144,13 +151,13 @@ class EvoCore(object):
 
     def run_cv(self):
 
-        for dataset_name in self.dataset_name:
-            for classifier_name in self.classifier_name:
-                self._run(dataset_name, classifier_name)
+        for self.dataset_name in self.datasets:
+            for self.classifier_name in self.models:
+                self._run()
 
-    def _run(self, dataset_name=None, classifier_name=None):
+    def _run(self):
 
-        self._setup(dataset_name, classifier_name)
+        self._setup()
         self._start_logging()
         self._load_openML_dataset()
 
