@@ -8,8 +8,8 @@ datasets = [
 classifiers = [
         "LogisticRegression",
         "SVC",
-#        "RandomForestClassifier",
-#        "BaggingClassifier",
+        "RandomForestClassifier",
+        "BaggingClassifier",
 #        "RidgeClassifier",
 #        "AdaBoostClassifier",
 #        "ExtraTreesClassifier",
