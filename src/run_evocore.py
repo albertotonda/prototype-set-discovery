@@ -21,14 +21,21 @@
 # <alberto.tonda@gmail.com> <pietro.barbiero@studenti.polito.it>
 
 import sys
-import evocore as ev
+from evocore import EvoCore
+from bayescore import BayesCore, bc_algorithms
+from cross_validator import datasets, classifiers
 
 
 def main():
 
-    ec = ev.EvoCore(datasets=ev.datasets,
-                    models=ev.classifiers)
-    ec.run_cv()
+    bc = BayesCore(datasets=datasets,
+                   models=classifiers,
+                   algorithms=bc_algorithms)
+    bc.run()
+
+    ec = EvoCore(datasets=datasets,
+                 models=classifiers)
+    ec.run()
 
     return
 
