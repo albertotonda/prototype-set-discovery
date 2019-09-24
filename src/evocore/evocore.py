@@ -28,9 +28,8 @@ import datetime
 import numpy as np
 import sys
 import pandas as pd
-
+import multiprocessing
 from argparse import ArgumentParser
-
 from sklearn.model_selection import StratifiedKFold
 
 LOG_DIR = "../log"
@@ -103,7 +102,12 @@ class EvoCore(CrossValidator):
 
         self.ea.evolve(
                 generator=self._generate_coresets,
-                evaluator=self._evaluate_coresets,
+
+                # evaluator=self._evaluate_coresets,
+                # this part is defined to use multi-process evaluations
+                evaluator=inspyred.ec.evaluators.parallel_evaluation_mp,
+                mp_evaluator=self._evaluate_coresets,
+                mp_num_cpus=multiprocessing.cpu_count()-2,
 
                 pop_size=self.pop_size,
                 num_selected=self.offspring_size,

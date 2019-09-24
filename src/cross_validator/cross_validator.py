@@ -227,7 +227,9 @@ class CrossValidator(object):
             mode = ""
 
         log_name = self.dataset_name + "_" + \
-            self.classifier_name + \
+            self.classifier_name + "_" + \
+            self.name + "_" + \
+            "v" + str(self.version[0]) + "_" + str(self.version[1]) + \
             mode
         self.logger = initialize_logging(log_name)
 
