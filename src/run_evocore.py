@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright 2019 Alberto Tonda and Pietro Barbiero
+# Copyright 2019 Pietro Barbiero and Alberto Tonda
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
 # use this file except in compliance with the License.
@@ -21,13 +21,13 @@
 # <alberto.tonda@gmail.com> <pietro.barbiero@studenti.polito.it>
 
 import sys
-from evocore import EvoCore
+import evocore as ev
 
 
 def main():
 
-    ec = EvoCore(dataset_name="iris",
-                 classifier_name="RandomForestClassifier")
+    ec = ev.EvoCore(datasets=ev.datasets,
+                    models=ev.classifiers)
     ec.run_cv()
 
     return
