@@ -52,7 +52,7 @@ from .logging import initialize_logging, close_logging
 
 LOG_DIR = "../log"
 RESULTS_DIR = "../results"
-VERSION = (1, 0)
+VERSION = (1, 1)
 #DEBUG = True
 DEBUG = False
 
@@ -124,7 +124,7 @@ class EvoCore(object):
         self.accuracy["test_blind"] = None
 
         self.individuals = []
-        self.coreset = None
+        self.coreset = []
 
         self.results = None
 
@@ -156,7 +156,12 @@ class EvoCore(object):
             X_train, X_test = self.X[train_index], self.X[test_index]
             y_train, y_test = self.y[train_index], self.y[test_index]
 
-            X_core, y_core = self.fit(X_train, y_train)
+            coreset = self.fit(X_train, y_train)
+
+            # extract coreset indeces wth resplect to
+            # the whole dataset
+            self.coreset.append(train_index[coreset])
+            X_core, y_core = X_train[coreset, :], y_train[coreset]
 
             # save results
             self.accuracy["core_cv"].append(self.score(X_core, y_core))
@@ -175,8 +180,13 @@ class EvoCore(object):
 
     def fit(self, X_train, y_train):
 
-        self.X_train = X_train
-        self.y_train = y_train
+        skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True,
+                              random_state=self.seed)
+        listOfSplits = [split for split in skf.split(X_train, y_train)]
+        train_index, val_index = listOfSplits[0]
+
+        self.X_train, X_val = X_train[train_index], X_train[val_index]
+        self.y_train, y_val = y_train[train_index], y_train[val_index]
 
         # initialize pseudo-random number generation
         prng = random.Random()
@@ -203,26 +213,27 @@ class EvoCore(object):
         # find best individual, the one with the highest accuracy
         # on the training set
         accuracy_best = 0
+        coreset_best = None
         for individual in self.ea.archive:
             c_bool = np.array(individual.candidate, dtype=bool)
 
-            X_core = self.X_train[c_bool, :]
-            y_core = self.y_train[c_bool]
+            coreset = train_index[c_bool]
+
+            X_core = X_train[coreset, :]
+            y_core = y_train[coreset]
 
             model = copy.deepcopy(self.classifier)
             model.fit(X_core, y_core)
 
-            # compute train accuracy
-            accuracy_train = model.score(self.X_train, self.y_train)
+            # compute validation accuracy
+            accuracy_val = model.score(X_val, y_val)
 
-            if accuracy_best < accuracy_train:
-                self.coreset = c_bool
-                self.X_core = X_core
-                self.y_core = y_core
+            if accuracy_best < accuracy_val:
+                coreset_best = coreset
                 self.model = model
-                accuracy_best = accuracy_train
+                accuracy_best = accuracy_val
 
-        return X_core, y_core
+        return coreset_best
 
     def score(self, X, y):
         return self.model.score(X, y)
@@ -289,8 +300,8 @@ class EvoCore(object):
             row.append(self.accuracy["train_cv"][i])
             row.append(self.accuracy["test_cv"][i])
 
-            row.append(sum(self.coreset))
-            row.append(self.coreset)
+            row.append(len(self.coreset[i]))
+            row.append(self.coreset[i])
 
             df = df.append(pd.DataFrame([row], columns=columns),
                            ignore_index=True)
