@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright 2019 Alberto Tonda and Pietro Barbiero
+# Copyright 2019 Pietro Barbiero and Alberto Tonda
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
 # use this file except in compliance with the License.
@@ -53,8 +53,8 @@ from .logging import initialize_logging, close_logging
 LOG_DIR = "../log"
 RESULTS_DIR = "../results"
 VERSION = (1, 1)
-#DEBUG = True
-DEBUG = False
+DEBUG = True
+#DEBUG = False
 
 
 class EvoCore(object):
@@ -62,12 +62,13 @@ class EvoCore(object):
     Evocore class.
     """
 
-    def __init__(self, data_id=None,
-                 dataset_name="iris",
-                 classifier_name="RandomForestClassifier",
+    def __init__(self, data_ids=None,
+                 datasets="iris",
+                 classifiers="RandomForestClassifier",
                  n_splits=10,
                  seed=42,
                  *args, **kwargs):
+
         super().__init__(*args, **kwargs)
 
         self.version = VERSION
@@ -76,15 +77,28 @@ class EvoCore(object):
         self.seed = seed
         self.n_splits = n_splits
 
-        self.data_id = data_id
-        self.dataset_name = dataset_name
-        self.classifier_name = classifier_name
+#        if type(datasets) is str:
+#            self.data_ids = [data_ids]
+#            self.datasets = [datasets]
+#        elif type(datasets) == list:
+#            self.data_ids = data_ids
+#            self.datasets = datasets
+#        else:
+#            raise RuntimeError('Dataset type must be str or list')
+#            sys.exit(1)
+#
+#        if type(classifiers) is str:
+#            self.classifiers = [classifiers]
+
+#        self.data_id = data_id
+#        self.dataset_name = dataset_name
+#        self.classifier_name = classifier_name
 
         if DEBUG:
             self.max_points_in_core_set = 5
             self.min_points_in_core_set = 2
             self.pop_size = 4
-            self.max_generations = 5
+            self.max_generations = 2
         else:
             self.max_points_in_core_set = None
             self.min_points_in_core_set = None
@@ -128,18 +142,16 @@ class EvoCore(object):
 
         self.results = None
 
-#    def run_cv(self):
-#        self._setup()
-#
-#        for dataset in self.selected_dataset:
-#            for classifier in self.selected_classifiers:
-#                self._run_evocore_cv(dataset, classifier)
-
     def run_cv(self):
 
-        self._setup()
-        self._start_logging()
+        for dataset_name in self.dataset_name:
+            for classifier_name in self.classifier_name:
+                self._run(dataset_name, classifier_name)
 
+    def _run(self, dataset_name=None, classifier_name=None):
+
+        self._setup(dataset_name, classifier_name)
+        self._start_logging()
         self._load_openML_dataset()
 
         skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True,
@@ -309,10 +321,14 @@ class EvoCore(object):
         self.results = df
 
         if save:
+            if DEBUG:
+                mode = "_debug_"
+            else:
+                mode = ""
             experiment = self.dataset_name + "_" + \
                 self.classifier_name + "_v" + \
                 str(self.version[0]) + "_" + str(self.version[1]) + \
-                ".csv"
+                mode + ".csv"
             df.to_csv(os.path.join(RESULTS_DIR, experiment))
 
         return
