@@ -28,10 +28,10 @@ from cross_validator import datasets, classifiers
 
 def main():
 
-    bc = BayesCore(datasets=datasets,
-                   models=classifiers,
-                   algorithms=bc_algorithms)
-    bc.run()
+#    bc = BayesCore(datasets=datasets,
+#                   models=classifiers,
+#                   algorithms=bc_algorithms)
+#    bc.run()
 
     ec = EvoCore(datasets=datasets,
                  models=classifiers)
