@@ -20,201 +20,140 @@
 # by Alberto Tonda and Pietro Barbiero, 2019
 # <alberto.tonda@gmail.com> <pietro.barbiero@studenti.polito.it>
 
-import os
 import random
 import copy
 import inspyred
 import datetime
 import numpy as np
-import sys
-import pandas as pd
 import multiprocessing
-from argparse import ArgumentParser
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
+import warnings
 
-LOG_DIR = "../log"
-RESULTS_DIR = "../results"
-VERSION = (1, 2)
-# DEBUG = True
-DEBUG = False
-
-sys.path.insert(0, '../cross_validator')
-from cross_validator import CrossValidator
+warnings.filterwarnings("ignore")
 
 
-class EvoCore(CrossValidator):
+class EvoCore(BaseEstimator, TransformerMixin):
     """
     Evocore class.
     """
 
-    def __init__(self, pop_size=100, max_generations=100, *args, **kwargs):
+    def __init__(self, estimator, pop_size=100, max_generations=100, n_splits=10, seed=42):
 
-        super().__init__(*args, **kwargs)
+        self.__name__ = "evocore"
+        self.__version__ = "0.0.0"
 
-        self.name = "evocore"
+        self.n_splits = n_splits
+        self.seed = seed
 
-        self.log_dir = LOG_DIR
-        self.results_dir = RESULTS_DIR
-        self.debug = DEBUG
-        self.version = VERSION
+        self.max_points_in_core_set = None
+        self.min_points_in_core_set = 0
 
-        if self.debug:
-            self.max_points_in_coreset = 5
-            self.min_points_in_coreset = 2
-            self.pop_size = 4
-            self.max_generations = 2
-        else:
-            self.max_points_in_coreset = None
-            self.min_points_in_coreset = None
-            self.pop_size = pop_size
-            self.max_generations = max_generations
+        self.estimator = estimator
+        self.x_train = None
+        self.y_train = None
+        self.n_classes = None
 
-        self.offspring_size = None
+        self.pop_size = pop_size
+        self.max_generations = max_generations
+        self.offspring_size = 2*pop_size
         self.maximize = True
 
         self.individuals = []
-        self.coreset = []
+        self.core_set = []
+        self.x_core = None
+        self.y_core = None
 
-    def run(self):
-        self.run_cv()
+    def __repr__(self, N_CHAR_MAX=700):
+        return (f'{self.__class__.__name__}('
+                f'{self.pop_size!r}, {self.max_generations!r})')
 
-    def fit(self, X_train, y_train):
+    def fit(self, X, y=None, **fit_params):
+        logger = fit_params.get("logger")
 
         skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True,
                               random_state=self.seed)
-        listOfSplits = [split for split in skf.split(X_train, y_train)]
-        train_index, val_index = listOfSplits[0]
+        list_of_splits = [split for split in skf.split(X, y)]
+        train_index, val_index = list_of_splits[0]
 
-        self.X_train, X_val = X_train[train_index], X_train[val_index]
-        self.y_train, y_val = y_train[train_index], y_train[val_index]
+        self.x_train, x_val = X[train_index], X[val_index]
+        self.y_train, y_val = y[train_index], y[val_index]
 
-        self.max_points_in_coreset = self.X_train.shape[0]
-        self.min_points_in_coreset = self.n_classes
+        self.n_classes = len(np.unique(self.y_train))
+        self.max_points_in_core_set = self.x_train.shape[0]
+        self.min_points_in_core_set = self.n_classes
 
         # initialize pseudo-random number generation
         prng = random.Random()
         prng.seed(self.seed)
 
-        self.ea = inspyred.ec.emo.NSGA2(prng)
-        self.ea.variator = [self._variate]
-        self.ea.terminator = inspyred.ec.terminators.generation_termination
-        self.ea.observer = self._observe_coresets
+        ea = inspyred.ec.emo.NSGA2(prng)
+        ea.variator = [self._variate]
+        ea.terminator = inspyred.ec.terminators.generation_termination
+        ea.observer = self._observe_core_sets
 
-        self.ea.evolve(
-                generator=self._generate_coresets,
+        ea.evolve(
+            generator=self._generate_core_sets,
 
-                evaluator=self._evaluate_coresets,
-#                # this part is defined to use multi-process evaluations
-#                evaluator=inspyred.ec.evaluators.parallel_evaluation_mp,
-#                mp_evaluator=self._evaluate_coresets,
-#                mp_num_cpus=multiprocessing.cpu_count()-2,
+            evaluator=self._evaluate_core_sets,
+            # this part is defined to use multi-process evaluations
+            # evaluator=inspyred.ec.evaluators.parallel_evaluation_mp,
+            # mp_evaluator=self._evaluate_core_sets,
+            # mp_num_cpus=multiprocessing.cpu_count()-2,
 
-                pop_size=self.pop_size,
-                num_selected=self.offspring_size,
-                maximize=self.maximize,
-                max_generations=self.max_generations,
+            pop_size=self.pop_size,
+            num_selected=self.offspring_size,
+            maximize=self.maximize,
+            max_generations=self.max_generations,
+            logger=logger,
 
-                # extra arguments here
-                current_time=datetime.datetime.now()
+            # extra arguments here
+            current_time=datetime.datetime.now()
         )
 
-        # find best individual, the one with the highest accuracy
-        # on the training set
+        # find best individual, the one with the highest accuracy on the validation set
         accuracy_best = 0
-        coreset_best = None
-        for individual in self.ea.archive:
+        for individual in ea.archive:
             c_bool = np.array(individual.candidate, dtype=bool)
 
-            coreset = train_index[c_bool]
+            core_set = train_index[c_bool]
 
-            X_core = X_train[coreset, :]
-            y_core = y_train[coreset]
+            x_core = X[core_set, :]
+            y_core = y[core_set]
 
-            model = copy.deepcopy(self.classifier)
-            model.fit(X_core, y_core)
+            model = copy.deepcopy(self.estimator)
+            model.fit(x_core, y_core)
 
             # compute validation accuracy
-            accuracy_val = model.score(X_val, y_val)
+            accuracy_val = model.score(x_val, y_val)
 
             if accuracy_best < accuracy_val:
-                coreset_best = coreset
-                self.model = model
+                self.core_set = core_set
+                self.x_core = x_core
+                self.y_core = y_core
                 accuracy_best = accuracy_val
 
-        self._update_results(coreset_best)
+        return self.x_core, self.y_core
 
-        return
-
-    def _update_results(self, coreset):
-
-        X_train = self.X[self.train_index]
-        y_train = self.y[self.train_index]
-
-        # extract coreset indeces with respect to
-        # the whole dataset
-        self.coreset.append(self.train_index[coreset])
-        X_core, y_core = X_train[coreset, :], y_train[coreset]
-
-        # save results
-        self.accuracy["core_cv"].append(self.score(X_core, y_core))
-
-    def results_extra_arguments(self):
-        """
-        TODO: comment
-        """
-
-        columns = [
-                "max_points_in_coreset",
-                "min_points_in_coreset",
-                "pop_size",
-                "offspring_size",
-                "max_generations",
-
-                "core_cv",
-                "coreset_size",
-                "coreset",
-        ]
-
-        df = pd.DataFrame(columns=columns)
-
-        default_row = [
-                self.max_points_in_coreset,
-                self.min_points_in_coreset,
-                self.pop_size,
-                self.offspring_size,
-                self.max_generations,
-        ]
-
-        for i in range(0, self.n_splits):
-
-            row = []
-            row.extend(default_row)
-
-            row.append(self.accuracy["core_cv"][i])
-            row.append(len(self.coreset[i]))
-            row.append(self.coreset[i])
-
-            df = df.append(pd.DataFrame([row], columns=columns),
-                           ignore_index=True)
-
-        self.results = pd.concat([self.results, df], axis=1)
+    def transform(self, X, **fit_params):
+        return self.x_core, self.y_core
 
     # initial random generation of core sets (as binary strings)
-    def _generate_coresets(self, random, args):
+    def _generate_core_sets(self, random, args):
 
-        individual_length = self.X_train.shape[0]
+        individual_length = self.x_train.shape[0]
         individual = [0] * individual_length
 
-        points_in_coreset = random.randint(self.min_points_in_coreset,
-                                           self.max_points_in_coreset)
-        for i in range(points_in_coreset):
+        points_in_core_set = random.randint(self.min_points_in_core_set,
+                                           self.max_points_in_core_set)
+        for i in range(points_in_core_set):
             random_index = random.randint(0, individual_length-1)
             individual[random_index] = 1
 
         return individual
 
-    # using inspyred's notation, here is a single operator that performs both
-    # crossover and mutation, sequentially
+    # using inspyred's notation, here is a single operator that performs both crossover and mutation, sequentially
     def _variate(self, random, candidates, args):
 
         split_idx = int(len(candidates) / 2)
@@ -247,34 +186,27 @@ class EvoCore(CrossValidator):
             # (in case it isn't) repair it
             for child in children:
 
-                points_in_coreset = self._points_in_coreset(child)
+                points_in_core_set = _points_in_core_set(child)
 
-                # if it has too many coresets, delete one
-                while len(points_in_coreset) > self.max_points_in_coreset:
-                    index = random.choice(points_in_coreset)
+                # if it has too many core_sets, delete one
+                while len(points_in_core_set) > self.max_points_in_core_set:
+                    index = random.choice(points_in_core_set)
                     child[index] = 0
-                    points_in_coreset = self._points_in_coreset(child)
+                    points_in_core_set = _points_in_core_set(child)
 
-                # if it has too less coresets, add one
-                if len(points_in_coreset) < self.min_points_in_coreset:
-                    index = random.choice(points_in_coreset)
+                # if it has too less core_sets, add one
+                if len(points_in_core_set) < self.min_points_in_core_set:
+                    index = random.choice(points_in_core_set)
                     child[index] = 1
-                    points_in_coreset = self._points_in_coreset(child)
+                    points_in_core_set = _points_in_core_set(child)
 
             next_generation.append(children[0])
             next_generation.append(children[1])
 
         return next_generation
 
-    def _points_in_coreset(self, individual):
-        points_in_coreset = []
-        for index, value in enumerate(individual):
-            if value == 1:
-                points_in_coreset.append(index)
-        return points_in_coreset
-
     # function that evaluates the core sets
-    def _evaluate_coresets(self, candidates, args):
+    def _evaluate_core_sets(self, candidates, args):
 
         fitness = []
 
@@ -282,30 +214,19 @@ class EvoCore(CrossValidator):
 
             c_bool = np.array(c, dtype=bool)
 
-            X_core = self.X_train[c_bool, :]
+            x_core = self.x_train[c_bool, :]
             y_core = self.y_train[c_bool]
 
             if np.unique(y_core).shape[0] == self.n_classes:
 
-                model = copy.deepcopy(self.classifier)
-                model.fit(X_core, y_core)
+                model = copy.deepcopy(self.estimator)
+                model.fit(x_core, y_core)
 
                 # compute train accuracy
-                accuracy_train = model.score(self.X_train, self.y_train)
+                accuracy_train = model.score(self.x_train, self.y_train)
 
-                # compute numer of points outside the coreset
+                # compute numer of points outside the core_set
                 points_removed = sum(1-c_bool)
-
-#                # compute core accuracy
-#                accuracy_core = model.score(X_core, y_core)
-#
-#                coreset_size = sum(c_bool)
-#                # save individual
-#                self.individuals.append([
-#                        coreset_size,
-#                        accuracy_core,
-#                        accuracy_train,
-#                ])
 
             else:
                 # individual gets a horrible fitness value
@@ -325,13 +246,12 @@ class EvoCore(CrossValidator):
 
         return fitness
 
-    # the 'observer' function is called by inspyred algorithms
-    # at the end of every generation
-    def _observe_coresets(self, population, num_generations,
-                          num_evaluations, args):
+    # the 'observer' function is called by inspyred algorithms at the end of every generation
+    def _observe_core_sets(self, population, num_generations, num_evaluations, args):
 
-        training_set_size = self.X_train.shape[0]
+        training_set_size = self.x_train.shape[0]
         old_time = args["current_time"]
+        logger = args["logger"]
         current_time = datetime.datetime.now()
         delta_time = current_time - old_time
 
@@ -343,66 +263,15 @@ class EvoCore(CrossValidator):
             % (delta_time_string, num_generations,
                training_set_size - population[0].fitness[0],
                population[0].fitness[1])
-        self.logger.info(log)
+        if logger:
+            logger.info(log)
 
         args["current_time"] = current_time
 
-    def setup(self):
-        # argparse; all arguments are optional
-        p = ArgumentParser()
 
-        p.add_argument("--classifier_name", "-c",
-                       help="Classifier(s) to be tested. Default: %s."
-                       % (self.classifier_name))
-        p.add_argument("--dataset_name", "-d",
-                       help="Dataset to be tested. Default: %s."
-                       % (self.dataset_name))
-
-        p.add_argument("--pop_size", "-p", type=int,
-                       help="EA population size. Default: %d"
-                       % (self.pop_size))
-#        p.add_argument("--offspring_size", "-o", type=int,
-#                       help="Ea offspring size. Default: %d"
-#                       % (self.offspring_size))
-        p.add_argument("--max_generations", "-mg", type=int,
-                       help="Maximum number of generations." +
-                       "Default: %d" % (self.max_generations))
-
-#        p.add_argument("--min_points", "-mip", type=int,
-#                       help="Minimum number of points in the core set." +
-#                       "Default: %d" % (self.min_points_in_coreset))
-#        p.add_argument("--max_points", "-mxp", type=int,
-#                       help="Maximum number of points in the core set." +
-#                       "Default: %d" % (self.max_points_in_coreset))
-
-        # finally, parse the arguments
-        args = p.parse_args()
-
-        if args.dataset_name:
-            self.dataset_name = args.dataset_name
-        if args.classifier_name:
-            self.classifier_name = args.classifier_name
-        if args.max_generations:
-            self.max_generations = args.max_generations
-        if args.pop_size:
-            self.pop_size = args.pop_size
-
-        self.offspring_size = 2 * self.pop_size
-
-        # initialize classifier; some classifiers have random elements, and
-        # for our purpose, we are working with a specific instance, so we fix
-        # the classifier's behavior with a random seed
-        classifier_class = self.classifiers[self.classifier_name]
-        self.classifier = classifier_class(random_state=self.seed)
-
-        if _is_odd(self.pop_size):
-            self.pop_size += 1
-
-        if not os.path.isdir(self.log_dir):
-            os.makedirs(self.log_dir)
-        if not os.path.isdir(self.results_dir):
-            os.makedirs(self.results_dir)
-
-
-def _is_odd(num):
-    return num % 2 != 0
+def _points_in_core_set(individual):
+    points_in_core_set = []
+    for index, value in enumerate(individual):
+        if value == 1:
+            points_in_core_set.append(index)
+    return points_in_core_set
