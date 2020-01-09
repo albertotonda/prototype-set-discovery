@@ -14,11 +14,5 @@
 #
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# This script has been designed to perform multi-objective
-# learning of core sets.
-# by Alberto Tonda and Pietro Barbiero, 2019
-# <alberto.tonda@gmail.com> <pietro.barbiero@studenti.polito.it>
 
-__version__ = "0.0.0"
-from .bayesian_core_set import BayesianPrototypes, algorithms
+from .evocore import EvoCore
