@@ -35,12 +35,13 @@ class EvoCore(BaseEstimator, TransformerMixin):
     Evocore class.
     """
 
-    def __init__(self, estimator, pop_size: int = 100, max_generations: int = 100,
+    def __init__(self, estimator, pop_size: int = 100, max_generations: int = 100, max_points_in_core_set: int = None,
                  n_splits: int = 10, random_state: int = 42, scoring: str = "f1_weighted"):
 
         self.estimator = estimator
         self.pop_size = pop_size
         self.max_generations = max_generations
+        self.max_points_in_core_set = max_points_in_core_set
         self.n_splits = n_splits
         self.random_state = random_state
         self.scoring = scoring
@@ -61,7 +62,10 @@ class EvoCore(BaseEstimator, TransformerMixin):
         self.y_train_, y_val = y[train_index], y[val_index]
 
         self.n_classes_ = len(np.unique(self.y_train_))
-        self.max_points_in_core_set_ = self.x_train_.shape[0]
+        if self.max_points_in_core_set:
+            self.max_points_in_core_set_ = np.min([self.max_points_in_core_set, self.x_train_.shape[0]])
+        else:
+            self.max_points_in_core_set_ = self.x_train_.shape[0]
         self.min_points_in_core_set_ = self.n_classes_
 
         # initialize pseudo-random number generation
@@ -94,9 +98,8 @@ class EvoCore(BaseEstimator, TransformerMixin):
         # find best individual, the one with the highest accuracy on the validation set
         accuracy_best = 0
         for individual in ea.archive:
-            c_bool = np.array(individual.candidate, dtype=bool)
 
-            core_set = train_index[c_bool]
+            core_set = individual.candidate
 
             x_core = X.iloc[core_set]
             y_core = y[core_set]
@@ -121,14 +124,9 @@ class EvoCore(BaseEstimator, TransformerMixin):
     # initial random generation of core sets (as binary strings)
     def _generate_core_sets(self, random, args):
 
-        individual_length = self.x_train_.shape[0]
-        individual = [0] * individual_length
-
-        points_in_core_set = random.randint(self.min_points_in_core_set_,
-                                            self.max_points_in_core_set_)
-        for i in range(points_in_core_set):
-            random_index = random.randint(0, individual_length-1)
-            individual[random_index] = 1
+        points_in_core_set = random.randint(self.min_points_in_core_set_, self.max_points_in_core_set_)
+        individual = np.random.choice(self.x_train_.shape[0], size=(points_in_core_set,), replace=False).tolist()
+        individual = np.sort(individual).tolist()
 
         return individual
 
@@ -147,37 +145,52 @@ class EvoCore(BaseEstimator, TransformerMixin):
             children = [list(parent1), list(parent2)]
 
             # one-point crossover!
-            cutPoint = random.randint(0, len(children[0])-1)
-            for index in range(0, cutPoint+1):
-                temp = children[0][index]
-                children[0][index] = children[1][index]
-                children[1][index] = temp
+            cut_point1 = random.randint(1, len(children[0])-1)
+            cut_point2 = random.randint(1, len(children[1])-1)
+            child1 = children[0][cut_point1:] + children[1][:cut_point2]
+            child2 = children[1][cut_point2:] + children[0][:cut_point1]
+
+            # remove duplicates
+            # indexes = np.unique(child1, return_index=True)[1]
+            # child1 = [child1[index] for index in sorted(indexes)]
+            # indexes = np.unique(child2, return_index=True)[1]
+            # child2 = [child2[index] for index in sorted(indexes)]
+            child1 = np.unique(child1).tolist()
+            child2 = np.unique(child2).tolist()
+
+            children = [child1, child2]
 
             # mutate!
             for child in children:
-                mutationPoint = random.randint(0, len(child)-1)
-                if child[mutationPoint] == 0:
-                    child[mutationPoint] = 1
-                else:
-                    child[mutationPoint] = 0
+                mutation_point = random.randint(0, len(child)-1)
+                while True:
+                    new_val = np.random.choice(self.x_train_.shape[0])
+                    if new_val not in child:
+                        child[mutation_point] = new_val
+                        break
 
             # check if individual is still valid, and
             # (in case it isn't) repair it
             for child in children:
 
-                points_in_core_set = _points_in_core_set(child)
+                # if it has too many core_sets, delete them
+                if len(child) > self.max_points_in_core_set_:
+                    n_surplus = len(child) - self.max_points_in_core_set_
+                    indexes = random.choice(len(child), size=(n_surplus,))
+                    del child[indexes]
 
-                # if it has too many core_sets, delete one
-                while len(points_in_core_set) > self.max_points_in_core_set_:
-                    index = random.choice(points_in_core_set)
-                    child[index] = 0
-                    points_in_core_set = _points_in_core_set(child)
+                # if it has too less core_sets, add more
+                if len(child) < self.min_points_in_core_set_:
+                    n_surplus = self.min_points_in_core_set_ - len(child)
+                    for _ in range(n_surplus):
+                        while True:
+                            new_val = np.random.choice(self.x_train_.shape[0])
+                            if new_val not in child:
+                                child.append(new_val)
+                                break
 
-                # if it has too less core_sets, add one
-                if len(points_in_core_set) < self.min_points_in_core_set_:
-                    index = random.choice(points_in_core_set)
-                    child[index] = 1
-                    points_in_core_set = _points_in_core_set(child)
+            children[0] = np.sort(children[0]).tolist()
+            children[1] = np.sort(children[1]).tolist()
 
             next_generation.append(children[0])
             next_generation.append(children[1])
@@ -191,10 +204,8 @@ class EvoCore(BaseEstimator, TransformerMixin):
 
         for c in candidates:
 
-            c_bool = np.array(c, dtype=bool)
-
-            x_core = self.x_train_.iloc[c_bool, :]
-            y_core = self.y_train_[c_bool]
+            x_core = self.x_train_.iloc[c]
+            y_core = self.y_train_[c]
 
             if np.unique(y_core).shape[0] == self.n_classes_:
 
@@ -205,7 +216,7 @@ class EvoCore(BaseEstimator, TransformerMixin):
                 accuracy_train = self.scorer_(model, self.x_train_, self.y_train_)
 
                 # compute numer of points outside the core_set
-                points_removed = sum(1-c_bool)
+                points_removed = len(self.y_train_) - len(c)
 
             else:
                 # individual gets a horrible fitness value
@@ -247,11 +258,3 @@ class EvoCore(BaseEstimator, TransformerMixin):
         #     logger.info(log)
 
         args["current_time"] = current_time
-
-
-def _points_in_core_set(individual):
-    points_in_core_set = []
-    for index, value in enumerate(individual):
-        if value == 1:
-            points_in_core_set.append(index)
-    return points_in_core_set
