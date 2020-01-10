@@ -21,6 +21,8 @@ import inspyred
 import datetime
 import numpy as np
 import multiprocessing
+
+import scipy
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import get_scorer
@@ -35,13 +37,12 @@ class EvoCore(BaseEstimator, TransformerMixin):
     Evocore class.
     """
 
-    def __init__(self, estimator, pop_size: int = 100, max_generations: int = 100, max_points_in_core_set: int = None,
+    def __init__(self, estimator, pop_size: int = 100, max_generations: int = 100,
                  n_splits: int = 10, random_state: int = 42, scoring: str = "f1_weighted"):
 
         self.estimator = estimator
         self.pop_size = pop_size
         self.max_generations = max_generations
-        self.max_points_in_core_set = max_points_in_core_set
         self.n_splits = n_splits
         self.random_state = random_state
         self.scoring = scoring
@@ -62,10 +63,7 @@ class EvoCore(BaseEstimator, TransformerMixin):
         self.y_train_, y_val = y[train_index], y[val_index]
 
         self.n_classes_ = len(np.unique(self.y_train_))
-        if self.max_points_in_core_set:
-            self.max_points_in_core_set_ = np.min([self.max_points_in_core_set, self.x_train_.shape[0]])
-        else:
-            self.max_points_in_core_set_ = self.x_train_.shape[0]
+        self.max_points_in_core_set_ = self.x_train_.shape[0]
         self.min_points_in_core_set_ = self.n_classes_
 
         # initialize pseudo-random number generation
@@ -76,6 +74,7 @@ class EvoCore(BaseEstimator, TransformerMixin):
         ea.variator = [self._variate]
         ea.terminator = inspyred.ec.terminators.generation_termination
         ea.observer = self._observe_core_sets
+        ea.archiver = self._best_archiver
 
         ea.evolve(
             generator=self._generate_core_sets,
@@ -98,8 +97,9 @@ class EvoCore(BaseEstimator, TransformerMixin):
         # find best individual, the one with the highest accuracy on the validation set
         accuracy_best = 0
         for individual in ea.archive:
+            c_bool = np.array(individual.candidate, dtype=bool)
 
-            core_set = individual.candidate
+            core_set = train_index[c_bool]
 
             x_core = X.iloc[core_set]
             y_core = y[core_set]
@@ -124,11 +124,16 @@ class EvoCore(BaseEstimator, TransformerMixin):
     # initial random generation of core sets (as binary strings)
     def _generate_core_sets(self, random, args):
 
-        points_in_core_set = random.randint(self.min_points_in_core_set_, self.max_points_in_core_set_)
-        individual = np.random.choice(self.x_train_.shape[0], size=(points_in_core_set,), replace=False).tolist()
-        individual = np.sort(individual).tolist()
+        individual_length = self.x_train_.shape[0]
+        individual = [0] * individual_length
 
-        return individual
+        points_in_core_set = random.randint(self.min_points_in_core_set_,
+                                            self.max_points_in_core_set_)
+        for i in range(points_in_core_set):
+            random_index = random.randint(0, individual_length-1)
+            individual[random_index] = 1
+
+        return scipy.sparse.csr_matrix(individual)
 
     # using inspyred's notation, here is a single operator that performs both crossover and mutation, sequentially
     def _variate(self, random, candidates, args):
@@ -142,55 +147,38 @@ class EvoCore(BaseEstimator, TransformerMixin):
         for parent1, parent2 in zip(fathers, mothers):
 
             # well, for starters we just crossover two individuals, then mutate
-            children = [list(parent1), list(parent2)]
+            children = [parent1, parent2]
 
             # one-point crossover!
-            cut_point1 = random.randint(1, len(children[0])-1)
-            cut_point2 = random.randint(1, len(children[1])-1)
-            child1 = children[0][cut_point1:] + children[1][:cut_point2]
-            child2 = children[1][cut_point2:] + children[0][:cut_point1]
-
-            # remove duplicates
-            # indexes = np.unique(child1, return_index=True)[1]
-            # child1 = [child1[index] for index in sorted(indexes)]
-            # indexes = np.unique(child2, return_index=True)[1]
-            # child2 = [child2[index] for index in sorted(indexes)]
-            child1 = np.unique(child1).tolist()
-            child2 = np.unique(child2).tolist()
-
-            children = [child1, child2]
+            cut_point = random.randint(0, children[0].shape[1]-1)
+            child1 = scipy.sparse.hstack([children[0][:, :cut_point], children[1][:, cut_point:]], format="csr")
+            child2 = scipy.sparse.hstack([children[1][:, :cut_point], children[0][:, cut_point:]], format="csr")
 
             # mutate!
             for child in children:
-                mutation_point = random.randint(0, len(child)-1)
-                while True:
-                    new_val = np.random.choice(self.x_train_.shape[0])
-                    if new_val not in child:
-                        child[mutation_point] = new_val
-                        break
+                mutationPoint = random.randint(0, len(child)-1)
+                if child[mutationPoint] == 0:
+                    child[mutationPoint] = 1
+                else:
+                    child[mutationPoint] = 0
 
             # check if individual is still valid, and
             # (in case it isn't) repair it
             for child in children:
 
-                # if it has too many core_sets, delete them
-                if len(child) > self.max_points_in_core_set_:
-                    n_surplus = len(child) - self.max_points_in_core_set_
-                    indexes = random.choice(len(child), size=(n_surplus,))
-                    del child[indexes]
+                points_in_core_set = _points_in_core_set(child)
 
-                # if it has too less core_sets, add more
-                if len(child) < self.min_points_in_core_set_:
-                    n_surplus = self.min_points_in_core_set_ - len(child)
-                    for _ in range(n_surplus):
-                        while True:
-                            new_val = np.random.choice(self.x_train_.shape[0])
-                            if new_val not in child:
-                                child.append(new_val)
-                                break
+                # if it has too many core_sets, delete one
+                while len(points_in_core_set) > self.max_points_in_core_set_:
+                    index = random.choice(points_in_core_set)
+                    child[index] = 0
+                    points_in_core_set = _points_in_core_set(child)
 
-            children[0] = np.sort(children[0]).tolist()
-            children[1] = np.sort(children[1]).tolist()
+                # if it has too less core_sets, add one
+                if len(points_in_core_set) < self.min_points_in_core_set_:
+                    index = random.choice(points_in_core_set)
+                    child[index] = 1
+                    points_in_core_set = _points_in_core_set(child)
 
             next_generation.append(children[0])
             next_generation.append(children[1])
@@ -204,8 +192,8 @@ class EvoCore(BaseEstimator, TransformerMixin):
 
         for c in candidates:
 
-            x_core = self.x_train_.iloc[c]
-            y_core = self.y_train_[c]
+            x_core = self.x_train_.iloc[c.indices]
+            y_core = self.y_train_[c.indices]
 
             if np.unique(y_core).shape[0] == self.n_classes_:
 
@@ -216,7 +204,7 @@ class EvoCore(BaseEstimator, TransformerMixin):
                 accuracy_train = self.scorer_(model, self.x_train_, self.y_train_)
 
                 # compute numer of points outside the core_set
-                points_removed = len(self.y_train_) - len(c)
+                points_removed = self.y_train_.shape[0] - y_core.shape[0]
 
             else:
                 # individual gets a horrible fitness value
@@ -235,6 +223,44 @@ class EvoCore(BaseEstimator, TransformerMixin):
             ]))
 
         return fitness
+
+    def _best_archiver(self, random, population, archive, args):
+        """Archive only the best individual(s).
+
+        This function archives the best solutions and removes inferior ones.
+        If the comparison operators have been overloaded to define Pareto
+        preference (as in the ``Pareto`` class), then this archiver will form
+        a Pareto archive.
+
+        .. Arguments:
+           random -- the random number generator object
+           population -- the population of individuals
+           archive -- the current archive of individuals
+           args -- a dictionary of keyword arguments
+
+        """
+        new_archive = archive
+        for ind in population:
+            if len(new_archive) == 0:
+                new_archive.append(ind)
+            else:
+                should_remove = []
+                should_add = True
+                for a in new_archive:
+                    if np.all(ind.candidate.indices == a.candidate.indices):
+                        should_add = False
+                        break
+                    elif ind < a:
+                        should_add = False
+                    elif ind > a:
+                        should_remove.append(a)
+                for r in should_remove:
+                    for pos, item in enumerate(new_archive):
+                        if np.all(r.candidate.indices == item.candidate.indices):
+                            del new_archive[pos]
+                if should_add:
+                    new_archive.append(ind)
+        return new_archive
 
     # the 'observer' function is called by inspyred algorithms at the end of every generation
     def _observe_core_sets(self, population, num_generations, num_evaluations, args):
@@ -258,3 +284,11 @@ class EvoCore(BaseEstimator, TransformerMixin):
         #     logger.info(log)
 
         args["current_time"] = current_time
+
+
+def _points_in_core_set(individual):
+    points_in_core_set = []
+    for index, value in enumerate(individual):
+        if value == 1:
+            points_in_core_set.append(index)
+    return points_in_core_set
