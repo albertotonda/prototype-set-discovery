@@ -17,6 +17,8 @@
 
 import random
 import copy
+import traceback
+
 import inspyred
 import datetime
 import numpy as np
@@ -30,6 +32,13 @@ from sklearn.model_selection import StratifiedKFold
 import warnings
 
 warnings.filterwarnings("ignore")
+
+
+def _is_survivor(individual, survivors):
+    for s in survivors:
+        if np.all(individual.candidate.indices == s.candidate.indices):
+            return True
+    return False
 
 
 class EvoCore(BaseEstimator, TransformerMixin):
@@ -75,6 +84,7 @@ class EvoCore(BaseEstimator, TransformerMixin):
         ea.terminator = inspyred.ec.terminators.generation_termination
         ea.observer = self._observe_core_sets
         ea.archiver = self._best_archiver
+        ea.replacer = self._nsga_replacement
 
         ea.evolve(
             generator=self._generate_core_sets,
@@ -97,9 +107,8 @@ class EvoCore(BaseEstimator, TransformerMixin):
         # find best individual, the one with the highest accuracy on the validation set
         accuracy_best = 0
         for individual in ea.archive:
-            c_bool = np.array(individual.candidate, dtype=bool)
 
-            core_set = train_index[c_bool]
+            core_set = train_index[individual.candidate.indices]
 
             x_core = X.iloc[core_set]
             y_core = y[core_set]
@@ -154,31 +163,29 @@ class EvoCore(BaseEstimator, TransformerMixin):
             child1 = scipy.sparse.hstack([children[0][:, :cut_point], children[1][:, cut_point:]], format="csr")
             child2 = scipy.sparse.hstack([children[1][:, :cut_point], children[0][:, cut_point:]], format="csr")
 
+            children = [child1, child2]
+
             # mutate!
             for child in children:
-                mutationPoint = random.randint(0, len(child)-1)
-                if child[mutationPoint] == 0:
-                    child[mutationPoint] = 1
+                mutation_point = random.randint(0, child.shape[1]-1)
+                if mutation_point not in child.indices:
+                    child[:, mutation_point] = 1
                 else:
-                    child[mutationPoint] = 0
+                    child[:, mutation_point] = 0
 
             # check if individual is still valid, and
             # (in case it isn't) repair it
             for child in children:
 
-                points_in_core_set = _points_in_core_set(child)
-
                 # if it has too many core_sets, delete one
-                while len(points_in_core_set) > self.max_points_in_core_set_:
-                    index = random.choice(points_in_core_set)
-                    child[index] = 0
-                    points_in_core_set = _points_in_core_set(child)
+                while len(child.indices) > self.max_points_in_core_set_:
+                    index = random.choice(self.y_train_.shape[0])
+                    child[:, index] = 0
 
                 # if it has too less core_sets, add one
-                if len(points_in_core_set) < self.min_points_in_core_set_:
-                    index = random.choice(points_in_core_set)
-                    child[index] = 1
-                    points_in_core_set = _points_in_core_set(child)
+                if len(child.indices) < self.min_points_in_core_set_:
+                    index = random.choice(self.y_train_.shape[0])
+                    child[:, index] = 1
 
             next_generation.append(children[0])
             next_generation.append(children[1])
@@ -262,6 +269,79 @@ class EvoCore(BaseEstimator, TransformerMixin):
                     new_archive.append(ind)
         return new_archive
 
+    def _nsga_replacement(self, random, population, parents, offspring, args):
+        """Replaces population using the non-dominated sorting technique from NSGA-II.
+
+        .. Arguments:
+           random -- the random number generator object
+           population -- the population of individuals
+           parents -- the list of parent individuals
+           offspring -- the list of offspring individuals
+           args -- a dictionary of keyword arguments
+
+        """
+        survivors = []
+        combined = list(population)
+        combined.extend(offspring)
+
+        # Perform the non-dominated sorting to determine the fronts.
+        fronts = []
+        pop = set(range(len(combined)))
+        while len(pop) > 0:
+            front = []
+            for p in pop:
+                dominated = False
+                for q in pop:
+                    if combined[p] < combined[q]:
+                        dominated = True
+                        break
+                if not dominated:
+                    front.append(p)
+            fronts.append([dict(individual=combined[f], index=f) for f in front])
+            pop = pop - set(front)
+
+        # Go through each front and add all the elements until doing so
+        # would put you above the population limit. At that point, fall
+        # back to the crowding distance to determine who to put into the
+        # next population. Individuals with higher crowding distances
+        # (i.e., more distance between neighbors) are preferred.
+        for i, front in enumerate(fronts):
+            if len(survivors) + len(front) > len(population):
+                # Determine the crowding distance.
+                distance = [0 for _ in range(len(combined))]
+                individuals = list(front)
+                num_individuals = len(individuals)
+                num_objectives = len(individuals[0]['individual'].fitness)
+                for obj in range(num_objectives):
+                    individuals.sort(key=lambda x: x['individual'].fitness[obj])
+                    distance[individuals[0]['index']] = float('inf')
+                    distance[individuals[-1]['index']] = float('inf')
+                    for i in range(1, num_individuals - 1):
+                        distance[individuals[i]['index']] = (distance[individuals[i]['index']] +
+                                                             (individuals[i + 1]['individual'].fitness[obj] -
+                                                              individuals[i - 1]['individual'].fitness[obj]))
+
+                crowd = [dict(dist=distance[f['index']], index=f['index']) for f in front]
+                crowd.sort(key=lambda x: x['dist'], reverse=True)
+                last_rank = [combined[c['index']] for c in crowd]
+                r = 0
+                num_added = 0
+                num_left_to_add = len(population) - len(survivors)
+                while r < len(last_rank) and num_added < num_left_to_add:
+                    if not _is_survivor(last_rank[r], survivors):
+                        survivors.append(last_rank[r])
+                        num_added += 1
+                    r += 1
+                # If we've filled out our survivor list, then stop.
+                # Otherwise, process the next front in the list.
+                if len(survivors) == len(population):
+                    break
+            else:
+                for f in front:
+                    if not _is_survivor(f['individual'], survivors):
+                        survivors.append(f['individual'])
+        return survivors
+
     # the 'observer' function is called by inspyred algorithms at the end of every generation
     def _observe_core_sets(self, population, num_generations, num_evaluations, args):
 
@@ -284,11 +364,3 @@ class EvoCore(BaseEstimator, TransformerMixin):
         #     logger.info(log)
 
         args["current_time"] = current_time
-
-
-def _points_in_core_set(individual):
-    points_in_core_set = []
-    for index, value in enumerate(individual):
-        if value == 1:
-            points_in_core_set.append(index)
-    return points_in_core_set
