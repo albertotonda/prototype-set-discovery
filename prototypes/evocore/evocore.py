@@ -17,6 +17,8 @@
 
 import random
 import copy
+import traceback
+
 import inspyred
 import datetime
 import numpy as np
@@ -176,8 +178,8 @@ class EvoCore(BaseEstimator, TransformerMixin):
                 # if it has too many core_sets, delete them
                 if len(child) > self.max_points_in_core_set_:
                     n_surplus = len(child) - self.max_points_in_core_set_
-                    indexes = random.choice(len(child), size=(n_surplus,))
-                    del child[indexes]
+                    indexes = np.random.choice(len(child), size=(n_surplus,))
+                    child = np.delete(child, indexes).tolist()
 
                 # if it has too less core_sets, add more
                 if len(child) < self.min_points_in_core_set_:
@@ -249,7 +251,7 @@ class EvoCore(BaseEstimator, TransformerMixin):
         # so here is some fancy formatting
         delta_time_string = str(delta_time)[:-7] + "s"
 
-        log = "[%s] Generation %d, Random individual: size=%d, accuracy=%.2f" \
+        log = "[%s] Generation %d, Random individual: size=%d, score=%.2f" \
             % (delta_time_string, num_generations,
                training_set_size - population[0].fitness[0],
                population[0].fitness[1])
